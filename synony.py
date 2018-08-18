@@ -1,4 +1,6 @@
 import lyricsgenius as genius
+import threading
+import queue
 import requests
 import random
 import bs4
@@ -76,34 +78,83 @@ def remove_brackets_lines(text):
             new_text += line + "\n"
     return new_text[:-1]
 
+def split(string):
+    arr, sep = [""], []
+    for c in string:
+        if c in ",;:.?! ":
+            sep.append(c)
+            arr.append("")
+        else:
+            arr[-1] += c
+    return arr, sep
+
+def join(arr, sep):
+    string = ""
+    for i in range(len(arr)):
+        string += arr[i]
+        if i < len(sep):
+            string += sep[i]
+    return string
+
 def transform(text):
-    def split(string):
-        arr, sep = [""], []
-        for c in string:
-            if c in ",;:.?! ":
-                sep.append(c)
-                arr.append("")
-            else:
-                arr[-1] += c
-        return arr, sep
-    def join(arr, sep):
-        string = ""
-        for i in range(len(arr)):
-            string += arr[i]
-            if i < len(sep):
-                string += sep[i]
-        return string
     out = ""
     arr, sep = split(remove_brackets_lines(text))
+    n_threads = 100
+
     print("Processing lyrics...")
+
+    q_in = queue.Queue()
+    q_out = queue.Queue()
+    q_progress = queue.Queue()
+    threads = []
+
+    def worker(arr, q_in, q_out, q_progress):
+        while True:
+            index = q_in.get()
+            if index is None:
+                break
+            word = get_synonym(arr[index].lower())
+            q_out.put({index: word})
+            q_progress.put(True)
+            q_in.task_done()
+
+    def progress(length, q):
+        index = 0
+        while True:
+            foo = q.get()
+            if foo is None:
+                break
+            index += 1
+            charging_bar(index, length, "")
+
+    for i in range(n_threads):
+        thread = threading.Thread(target=worker,
+            args=(arr, q_in, q_out, q_progress))
+        thread.start()
+        threads.append(thread)
+
+    progress_thread = threading.Thread(target=progress,
+        args=(len(arr), q_progress))
+    progress_thread.start()
+
     for i in range(len(arr)):
-        charging_bar(i, len(arr), "")
         if len(arr[i]) > 0 and random.random() < PROBABILITY_FETCH\
             and arr[i].lower() not in STOPWORDS:
-            definition = get_synonym(arr[i].lower())
-            if definition is not None:
-                arr[i] = definition
-    charging_bar(len(arr), len(arr), "\n\n\n")
+            q_in.put(i)
+
+    q_in.join()
+
+    for i in range(n_threads):
+        q_in.put(None)
+    q_progress.put(None)
+    for tread in threads:
+        thread.join()
+
+    while not q_out.empty():
+        index, response = list(q_out.get().items())[0]
+        if response is not None:
+            arr[index] = response
+
     os.system("clear")
     return join(arr, sep)
 
